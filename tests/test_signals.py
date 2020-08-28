@@ -1,14 +1,18 @@
 import gc
 import sys
 import time
+import unittest
 
 import blinker
-
-from nose.tools import assert_raises
 
 
 jython = sys.platform.startswith('java')
 pypy = hasattr(sys, 'pypy_version_info')
+
+try:
+    from _test_async import test_send_async
+except (SyntaxError, ImportError):
+    pass
 
 
 def collect_acyclic_refs():
@@ -34,455 +38,439 @@ class Sentinel(list):
         return receiver
 
 
-def test_meta_connect():
-    sentinel = []
-    def meta_received(sender, **kw):
-        sentinel.append(dict(kw, sender=sender))
+class TestSignal(unittest.TestCase):
 
-    assert not blinker.receiver_connected.receivers
-    blinker.receiver_connected.connect(meta_received)
-    assert not sentinel
+    def test_meta_connect(self):
+        sentinel = []
+        def meta_received(sender, **kw):
+            sentinel.append(dict(kw, sender=sender))
 
-    def receiver(sender, **kw):
-        pass
-    sig = blinker.Signal()
-    sig.connect(receiver)
+        assert not blinker.receiver_connected.receivers
+        blinker.receiver_connected.connect(meta_received)
+        assert not sentinel
 
-    assert sentinel == [{'sender': sig,
-                         'receiver_arg': receiver,
-                         'sender_arg': blinker.ANY,
-                         'weak_arg': True}]
+        def receiver(sender, **kw):
+            pass
+        sig = blinker.Signal()
+        sig.connect(receiver)
 
-    blinker.receiver_connected._clear_state()
+        assert sentinel == [{'sender': sig,
+                             'receiver_arg': receiver,
+                             'sender_arg': blinker.ANY,
+                             'weak_arg': True}]
 
+        blinker.receiver_connected._clear_state()
 
-def _test_signal_signals(sender):
-    sentinel = Sentinel()
-    sig = blinker.Signal()
+    def _test_signal_signals(self, sender):
+        sentinel = Sentinel()
+        sig = blinker.Signal()
 
-    connected = sentinel.make_receiver('receiver_connected')
-    disconnected = sentinel.make_receiver('receiver_disconnected')
-    receiver1 = sentinel.make_receiver('receiver1')
-    receiver2 = sentinel.make_receiver('receiver2')
+        connected = sentinel.make_receiver('receiver_connected')
+        disconnected = sentinel.make_receiver('receiver_disconnected')
+        receiver1 = sentinel.make_receiver('receiver1')
+        receiver2 = sentinel.make_receiver('receiver2')
 
-    assert not sig.receiver_connected.receivers
-    assert not sig.receiver_disconnected.receivers
-    sig.receiver_connected.connect(connected)
-    sig.receiver_disconnected.connect(disconnected)
+        assert not sig.receiver_connected.receivers
+        assert not sig.receiver_disconnected.receivers
+        sig.receiver_connected.connect(connected)
+        sig.receiver_disconnected.connect(disconnected)
 
-    assert sig.receiver_connected.receivers
-    assert not sentinel
+        assert sig.receiver_connected.receivers
+        assert not sentinel
 
-    for receiver, weak in [(receiver1, True), (receiver2, False)]:
-        sig.connect(receiver, sender=sender, weak=weak)
+        for receiver, weak in [(receiver1, True), (receiver2, False)]:
+            sig.connect(receiver, sender=sender, weak=weak)
 
-        expected = ('receiver_connected',
+            expected = ('receiver_connected',
+                        sig,
+                        {'receiver': receiver, 'sender': sender, 'weak': weak})
+
+            assert sentinel[-1] == expected
+
+        # disconnect from explicit sender
+        sig.disconnect(receiver1, sender=sender)
+
+        expected = ('receiver_disconnected',
                     sig,
-                    {'receiver': receiver, 'sender': sender, 'weak': weak})
-
+                    {'receiver': receiver1, 'sender': sender})
         assert sentinel[-1] == expected
 
-    # disconnect from explicit sender
-    sig.disconnect(receiver1, sender=sender)
+        # disconnect from ANY and all senders (implicit disconnect signature)
+        sig.disconnect(receiver2)
+        assert sentinel[-1] == ('receiver_disconnected',
+                                sig,
+                                {'receiver': receiver2, 'sender': blinker.ANY})
+
+    def test_signal_signals_any_sender(self):
+        self._test_signal_signals(blinker.ANY)
 
-    expected = ('receiver_disconnected',
-                sig,
-                {'receiver': receiver1, 'sender': sender})
-    assert sentinel[-1] == expected
+    def test_signal_signals_strong_sender(self):
+        self._test_signal_signals("squiznart")
 
-    # disconnect from ANY and all senders (implicit disconnect signature)
-    sig.disconnect(receiver2)
-    assert sentinel[-1] == ('receiver_disconnected',
-                            sig,
-                            {'receiver': receiver2, 'sender': blinker.ANY})
+    def test_signal_weak_receiver_vanishes(self):
+        # non-edge-case path for weak receivers is exercised in the ANY sender
+        # test above.
+        sentinel = Sentinel()
+        sig = blinker.Signal()
 
+        connected = sentinel.make_receiver('receiver_connected')
+        disconnected = sentinel.make_receiver('receiver_disconnected')
+        receiver1 = sentinel.make_receiver('receiver1')
+        receiver2 = sentinel.make_receiver('receiver2')
 
-def test_signal_signals_any_sender():
-    _test_signal_signals(blinker.ANY)
+        sig.receiver_connected.connect(connected)
+        sig.receiver_disconnected.connect(disconnected)
 
+        # explicit disconnect on a weak does emit the signal
+        sig.connect(receiver1, weak=True)
+        sig.disconnect(receiver1)
 
-def test_signal_signals_strong_sender():
-    _test_signal_signals("squiznart")
+        assert len(sentinel) == 2
+        assert sentinel[-1][2]['receiver'] is receiver1
 
+        del sentinel[:]
+        sig.connect(receiver2, weak=True)
+        assert len(sentinel) == 1
 
-def test_signal_weak_receiver_vanishes():
-    # non-edge-case path for weak receivers is exercised in the ANY sender
-    # test above.
-    sentinel = Sentinel()
-    sig = blinker.Signal()
+        del sentinel[:]  # holds a ref to receiver2
+        del receiver2
+        collect_acyclic_refs()
 
-    connected = sentinel.make_receiver('receiver_connected')
-    disconnected = sentinel.make_receiver('receiver_disconnected')
-    receiver1 = sentinel.make_receiver('receiver1')
-    receiver2 = sentinel.make_receiver('receiver2')
+        # no disconnect signal is fired
+        assert len(sentinel) == 0
 
-    sig.receiver_connected.connect(connected)
-    sig.receiver_disconnected.connect(disconnected)
+        # and everything really is disconnected
+        sig.send('abc')
+        assert len(sentinel) == 0
 
-    # explicit disconnect on a weak does emit the signal
-    sig.connect(receiver1, weak=True)
-    sig.disconnect(receiver1)
+    def test_signal_signals_weak_sender(self):
+        sentinel = Sentinel()
+        sig = blinker.Signal()
 
-    assert len(sentinel) == 2
-    assert sentinel[-1][2]['receiver'] is receiver1
+        connected = sentinel.make_receiver('receiver_connected')
+        disconnected = sentinel.make_receiver('receiver_disconnected')
+        receiver1 = sentinel.make_receiver('receiver1')
+        receiver2 = sentinel.make_receiver('receiver2')
 
-    del sentinel[:]
-    sig.connect(receiver2, weak=True)
-    assert len(sentinel) == 1
+        class Sender(object):
+            """A weakref-able object."""
 
-    del sentinel[:]  # holds a ref to receiver2
-    del receiver2
-    collect_acyclic_refs()
+        sig.receiver_connected.connect(connected)
+        sig.receiver_disconnected.connect(disconnected)
 
-    # no disconnect signal is fired
-    assert len(sentinel) == 0
+        sender1 = Sender()
+        sig.connect(receiver1, sender=sender1, weak=False)
+        # regular disconnect of weak-able sender works fine
+        sig.disconnect(receiver1, sender=sender1)
 
-    # and everything really is disconnected
-    sig.send('abc')
-    assert len(sentinel) == 0
+        assert len(sentinel) == 2
 
+        del sentinel[:]
+        sender2 = Sender()
+        sig.connect(receiver2, sender=sender2, weak=False)
 
-def test_signal_signals_weak_sender():
-    sentinel = Sentinel()
-    sig = blinker.Signal()
+        # force sender2 to go out of scope
+        del sender2
+        collect_acyclic_refs()
 
-    connected = sentinel.make_receiver('receiver_connected')
-    disconnected = sentinel.make_receiver('receiver_disconnected')
-    receiver1 = sentinel.make_receiver('receiver1')
-    receiver2 = sentinel.make_receiver('receiver2')
+        # no disconnect signal is fired
+        assert len(sentinel) == 1
 
-    class Sender(object):
-        """A weakref-able object."""
+        # and everything really is disconnected
+        sig.send('abc')
+        assert len(sentinel) == 1
 
-    sig.receiver_connected.connect(connected)
-    sig.receiver_disconnected.connect(disconnected)
+    def test_empty_bucket_growth(self):
+        sentinel = Sentinel()
+        sig = blinker.Signal()
+        senders = lambda: (len(sig._by_sender),
+                           sum(len(i) for i in sig._by_sender.values()))
+        receivers = lambda: (len(sig._by_receiver),
+                             sum(len(i) for i in sig._by_receiver.values()))
 
-    sender1 = Sender()
-    sig.connect(receiver1, sender=sender1, weak=False)
-    # regular disconnect of weak-able sender works fine
-    sig.disconnect(receiver1, sender=sender1)
+        receiver1 = sentinel.make_receiver('receiver1')
+        receiver2 = sentinel.make_receiver('receiver2')
 
-    assert len(sentinel) == 2
+        class Sender(object):
+            """A weakref-able object."""
+
+        sender = Sender()
+        sig.connect(receiver1, sender=sender)
+        sig.connect(receiver2, sender=sender)
+
+        assert senders() == (1, 2)
+        assert receivers() == (2, 2)
+
+        sig.disconnect(receiver1, sender=sender)
 
-    del sentinel[:]
-    sender2 = Sender()
-    sig.connect(receiver2, sender=sender2, weak=False)
+        assert senders() == (1, 1)
+        assert receivers() == (2, 1)
+
+        sig.disconnect(receiver2, sender=sender)
 
-    # force sender2 to go out of scope
-    del sender2
-    collect_acyclic_refs()
+        assert senders() == (1, 0)
+        assert receivers() == (2, 0)
 
-    # no disconnect signal is fired
-    assert len(sentinel) == 1
+        sig._cleanup_bookkeeping()
+        assert senders() == (0, 0)
+        assert receivers() == (0, 0)
+
+    def test_meta_connect_failure(self):
+        def meta_received(sender, **kw):
+            raise TypeError('boom')
 
-    # and everything really is disconnected
-    sig.send('abc')
-    assert len(sentinel) == 1
+        assert not blinker.receiver_connected.receivers
+        blinker.receiver_connected.connect(meta_received)
 
+        def receiver(sender, **kw):
+            pass
+        sig = blinker.Signal()
+
+        with self.assertRaises(TypeError):
+            sig.connect(receiver)
+
+        assert not sig.receivers
+        assert not sig._by_receiver
+        assert sig._by_sender == {blinker.base.ANY_ID: set()}
+
+        blinker.receiver_connected._clear_state()
+
+    def test_weak_namespace(self):
+        ns = blinker.WeakNamespace()
+        assert not ns
+        s1 = ns.signal('abc')
+        assert s1 is ns.signal('abc')
+        assert s1 is not ns.signal('def')
+        assert 'abc' in ns
+        collect_acyclic_refs()
 
-def test_empty_bucket_growth():
-    sentinel = Sentinel()
-    sig = blinker.Signal()
-    senders = lambda: (len(sig._by_sender),
-                       sum(len(i) for i in sig._by_sender.values()))
-    receivers = lambda: (len(sig._by_receiver),
-                         sum(len(i) for i in sig._by_receiver.values()))
+        # weak by default, already out of scope
+        assert 'def' not in ns
+        del s1
+        collect_acyclic_refs()
+
+        assert 'abc' not in ns
+
+    def test_namespace(self):
+        ns = blinker.Namespace()
+        assert not ns
+        s1 = ns.signal('abc')
+        assert s1 is ns.signal('abc')
+        assert s1 is not ns.signal('def')
+        assert 'abc' in ns
+
+        del s1
+        collect_acyclic_refs()
+
+        assert 'def' in ns
+        assert 'abc' in ns
+
+    def test_weak_receiver(self):
+        sentinel = []
+        def received(sender, **kw):
+            sentinel.append(kw)
+
+        sig = blinker.Signal()
 
-    receiver1 = sentinel.make_receiver('receiver1')
-    receiver2 = sentinel.make_receiver('receiver2')
-
-    class Sender(object):
-        """A weakref-able object."""
-
-    sender = Sender()
-    sig.connect(receiver1, sender=sender)
-    sig.connect(receiver2, sender=sender)
-
-    assert senders() == (1, 2)
-    assert receivers() == (2, 2)
-
-    sig.disconnect(receiver1, sender=sender)
-
-    assert senders() == (1, 1)
-    assert receivers() == (2, 1)
-
-    sig.disconnect(receiver2, sender=sender)
-
-    assert senders() == (1, 0)
-    assert receivers() == (2, 0)
-
-    sig._cleanup_bookkeeping()
-    assert senders() == (0, 0)
-    assert receivers() == (0, 0)
-
-
-def test_meta_connect_failure():
-    def meta_received(sender, **kw):
-        raise TypeError('boom')
-
-    assert not blinker.receiver_connected.receivers
-    blinker.receiver_connected.connect(meta_received)
-
-    def receiver(sender, **kw):
-        pass
-    sig = blinker.Signal()
-
-    assert_raises(TypeError, sig.connect, receiver)
-    assert not sig.receivers
-    assert not sig._by_receiver
-    assert sig._by_sender == {blinker.base.ANY_ID: set()}
-
-    blinker.receiver_connected._clear_state()
-
-
-def test_weak_namespace():
-    ns = blinker.WeakNamespace()
-    assert not ns
-    s1 = ns.signal('abc')
-    assert s1 is ns.signal('abc')
-    assert s1 is not ns.signal('def')
-    assert 'abc' in ns
-    collect_acyclic_refs()
-
-    # weak by default, already out of scope
-    assert 'def' not in ns
-    del s1
-    collect_acyclic_refs()
-
-    assert 'abc' not in ns
-
-
-def test_namespace():
-    ns = blinker.Namespace()
-    assert not ns
-    s1 = ns.signal('abc')
-    assert s1 is ns.signal('abc')
-    assert s1 is not ns.signal('def')
-    assert 'abc' in ns
-
-    del s1
-    collect_acyclic_refs()
-
-    assert 'def' in ns
-    assert 'abc' in ns
-
-
-def test_weak_receiver():
-    sentinel = []
-    def received(sender, **kw):
-        sentinel.append(kw)
-
-    sig = blinker.Signal()
-
-    # XXX: weirdly, under jython an explicit weak=True causes this test
-    #      to fail, leaking a strong ref to the receiver somewhere.
-    #      http://bugs.jython.org/issue1586
-    if jython:
-        sig.connect(received)  # weak=True by default.
-    else:
-        sig.connect(received, weak=True)
-
-    del received
-    collect_acyclic_refs()
-
-    assert not sentinel
-    sig.send()
-    assert not sentinel
-    assert not sig.receivers
-    values_are_empty_sets_(sig._by_receiver)
-    values_are_empty_sets_(sig._by_sender)
-
-
-def test_strong_receiver():
-    sentinel = []
-    def received(sender):
-        sentinel.append(sender)
-    fn_id = id(received)
-
-    sig = blinker.Signal()
-    sig.connect(received, weak=False)
-
-    del received
-    collect_acyclic_refs()
-
-    assert not sentinel
-    sig.send()
-    assert sentinel
-    assert [id(fn) for fn in sig.receivers.values()] == [fn_id]
-
-
-def test_instancemethod_receiver():
-    sentinel = []
-
-    class Receiver(object):
-        def __init__(self, bucket):
-            self.bucket = bucket
-        def received(self, sender):
-            self.bucket.append(sender)
-
-    receiver = Receiver(sentinel)
-
-    sig = blinker.Signal()
-    sig.connect(receiver.received)
-
-    assert not sentinel
-    sig.send()
-    assert sentinel
-    del receiver
-    collect_acyclic_refs()
-
-    sig.send()
-    assert len(sentinel) == 1
-
-
-def test_filtered_receiver():
-    sentinel = []
-    def received(sender):
-        sentinel.append(sender)
-
-    sig = blinker.Signal()
-
-    sig.connect(received, 123)
-
-    assert not sentinel
-    sig.send()
-    assert not sentinel
-    sig.send(123)
-    assert sentinel == [123]
-    sig.send()
-    assert sentinel == [123]
-
-    sig.disconnect(received, 123)
-    sig.send(123)
-    assert sentinel == [123]
-
-    sig.connect(received, 123)
-    sig.send(123)
-    assert sentinel == [123, 123]
-
-    sig.disconnect(received)
-    sig.send(123)
-    assert sentinel == [123, 123]
-
-
-def test_filtered_receiver_weakref():
-    sentinel = []
-    def received(sender):
-        sentinel.append(sender)
-
-    class Object(object):
-        pass
-    obj = Object()
-
-    sig = blinker.Signal()
-    sig.connect(received, obj)
-
-    assert not sentinel
-    sig.send(obj)
-    assert sentinel == [obj]
-    del sentinel[:]
-    del obj
-    collect_acyclic_refs()
-
-    # general index isn't cleaned up
-    assert sig.receivers
-    # but receiver/sender pairs are
-    values_are_empty_sets_(sig._by_receiver)
-    values_are_empty_sets_(sig._by_sender)
-
-
-def test_decorated_receiver():
-    sentinel = []
-
-    class Object(object):
-        pass
-    obj = Object()
-
-    sig = blinker.Signal()
-
-    @sig.connect_via(obj)
-    def receiver(sender, **kw):
-        sentinel.append(kw)
-
-    assert not sentinel
-    sig.send()
-    assert not sentinel
-    sig.send(1)
-    assert not sentinel
-    sig.send(obj)
-    assert sig.receivers
-
-    del receiver
-    collect_acyclic_refs()
-    assert sig.receivers
-
-
-def test_no_double_send():
-    sentinel = []
-    def received(sender):
-        sentinel.append(sender)
-
-    sig = blinker.Signal()
-
-    sig.connect(received, 123)
-    sig.connect(received)
-
-    assert not sentinel
-    sig.send()
-    assert sentinel == [None]
-    sig.send(123)
-    assert sentinel == [None, 123]
-    sig.send()
-    assert sentinel == [None, 123, None]
-
-
-def test_has_receivers():
-    received = lambda sender: None
-
-    sig = blinker.Signal()
-    assert not sig.has_receivers_for(None)
-    assert not sig.has_receivers_for(blinker.ANY)
-
-    sig.connect(received, 'xyz')
-    assert not sig.has_receivers_for(None)
-    assert not sig.has_receivers_for(blinker.ANY)
-    assert sig.has_receivers_for('xyz')
-
-    class Object(object):
-        pass
-    o = Object()
-
-    sig.connect(received, o)
-    assert sig.has_receivers_for(o)
-
-    del received
-    collect_acyclic_refs()
-
-    assert not sig.has_receivers_for('xyz')
-    assert list(sig.receivers_for('xyz')) == []
-    assert list(sig.receivers_for(o)) == []
-
-    sig.connect(lambda sender: None, weak=False)
-    assert sig.has_receivers_for('xyz')
-    assert sig.has_receivers_for(o)
-    assert sig.has_receivers_for(None)
-    assert sig.has_receivers_for(blinker.ANY)
-    assert sig.has_receivers_for('xyz')
-
-
-def test_instance_doc():
-    sig = blinker.Signal(doc='x')
-    assert sig.__doc__ == 'x'
-
-    sig = blinker.Signal('x')
-    assert sig.__doc__ == 'x'
-
-
-def test_named_blinker():
-    sig = blinker.NamedSignal('squiznart')
-    assert 'squiznart' in repr(sig)
-
-
-def values_are_empty_sets_(dictionary):
-    for val in dictionary.values():
-        assert val == set()
+        # XXX: weirdly, under jython an explicit weak=True causes this test
+        #      to fail, leaking a strong ref to the receiver somewhere.
+        #      http://bugs.jython.org/issue1586
+        if jython:
+            sig.connect(received)  # weak=True by default.
+        else:
+            sig.connect(received, weak=True)
+
+        del received
+        collect_acyclic_refs()
+
+        assert not sentinel
+        sig.send()
+        assert not sentinel
+        assert not sig.receivers
+        self.values_are_empty_sets_(sig._by_receiver)
+        self.values_are_empty_sets_(sig._by_sender)
+
+    def test_strong_receiver(self):
+        sentinel = []
+        def received(sender):
+            sentinel.append(sender)
+        fn_id = id(received)
+
+        sig = blinker.Signal()
+        sig.connect(received, weak=False)
+
+        del received
+        collect_acyclic_refs()
+
+        assert not sentinel
+        sig.send()
+        assert sentinel
+        assert [id(fn) for fn in sig.receivers.values()] == [fn_id]
+
+    def test_instancemethod_receiver(self):
+        sentinel = []
+
+        class Receiver(object):
+            def __init__(self, bucket):
+                self.bucket = bucket
+            def received(self, sender):
+                self.bucket.append(sender)
+
+        receiver = Receiver(sentinel)
+
+        sig = blinker.Signal()
+        sig.connect(receiver.received)
+
+        assert not sentinel
+        sig.send()
+        assert sentinel
+        del receiver
+        collect_acyclic_refs()
+
+        sig.send()
+        assert len(sentinel) == 1
+
+    def test_filtered_receiver(self):
+        sentinel = []
+        def received(sender):
+            sentinel.append(sender)
+
+        sig = blinker.Signal()
+
+        sig.connect(received, 123)
+
+        assert not sentinel
+        sig.send()
+        assert not sentinel
+        sig.send(123)
+        assert sentinel == [123]
+        sig.send()
+        assert sentinel == [123]
+
+        sig.disconnect(received, 123)
+        sig.send(123)
+        assert sentinel == [123]
+
+        sig.connect(received, 123)
+        sig.send(123)
+        assert sentinel == [123, 123]
+
+        sig.disconnect(received)
+        sig.send(123)
+        assert sentinel == [123, 123]
+
+    def test_filtered_receiver_weakref(self):
+        sentinel = []
+        def received(sender):
+            sentinel.append(sender)
+
+        class Object(object):
+            pass
+        obj = Object()
+
+        sig = blinker.Signal()
+        sig.connect(received, obj)
+
+        assert not sentinel
+        sig.send(obj)
+        assert sentinel == [obj]
+        del sentinel[:]
+        del obj
+        collect_acyclic_refs()
+
+        # general index isn't cleaned up
+        assert sig.receivers
+        # but receiver/sender pairs are
+        self.values_are_empty_sets_(sig._by_receiver)
+        self.values_are_empty_sets_(sig._by_sender)
+
+    def test_decorated_receiver(self):
+        sentinel = []
+
+        class Object(object):
+            pass
+        obj = Object()
+
+        sig = blinker.Signal()
+
+        @sig.connect_via(obj)
+        def receiver(sender, **kw):
+            sentinel.append(kw)
+
+        assert not sentinel
+        sig.send()
+        assert not sentinel
+        sig.send(1)
+        assert not sentinel
+        sig.send(obj)
+        assert sig.receivers
+
+        del receiver
+        collect_acyclic_refs()
+        assert sig.receivers
+
+    def test_no_double_send(self):
+        sentinel = []
+        def received(sender):
+            sentinel.append(sender)
+
+        sig = blinker.Signal()
+
+        sig.connect(received, 123)
+        sig.connect(received)
+
+        assert not sentinel
+        sig.send()
+        assert sentinel == [None]
+        sig.send(123)
+        assert sentinel == [None, 123]
+        sig.send()
+        assert sentinel == [None, 123, None]
+
+    def test_has_receivers(self):
+        received = lambda sender: None
+
+        sig = blinker.Signal()
+        assert not sig.has_receivers_for(None)
+        assert not sig.has_receivers_for(blinker.ANY)
+
+        sig.connect(received, 'xyz')
+        assert not sig.has_receivers_for(None)
+        assert not sig.has_receivers_for(blinker.ANY)
+        assert sig.has_receivers_for('xyz')
+
+        class Object(object):
+            pass
+        o = Object()
+
+        sig.connect(received, o)
+        assert sig.has_receivers_for(o)
+
+        del received
+        collect_acyclic_refs()
+
+        assert not sig.has_receivers_for('xyz')
+        assert list(sig.receivers_for('xyz')) == []
+        assert list(sig.receivers_for(o)) == []
+
+        sig.connect(lambda sender: None, weak=False)
+        assert sig.has_receivers_for('xyz')
+        assert sig.has_receivers_for(o)
+        assert sig.has_receivers_for(None)
+        assert sig.has_receivers_for(blinker.ANY)
+        assert sig.has_receivers_for('xyz')
+
+    def test_instance_doc(self):
+        sig = blinker.Signal(doc='x')
+        assert sig.__doc__ == 'x'
+
+        sig = blinker.Signal('x')
+        assert sig.__doc__ == 'x'
+
+    def test_named_blinker(self):
+        sig = blinker.NamedSignal('squiznart')
+        assert 'squiznart' in repr(sig)
+
+    def values_are_empty_sets_(self, dictionary):
+        for val in dictionary.values():
+            assert val == set()
