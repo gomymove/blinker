@@ -25,4 +25,3 @@ def send_async(self, *sender, **kwargs):
 
 send_async.__doc__ = Signal.send_async.__doc__
 Signal.send_async = send_async
-
