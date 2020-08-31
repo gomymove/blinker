@@ -10,7 +10,7 @@ jython = sys.platform.startswith('java')
 pypy = hasattr(sys, 'pypy_version_info')
 
 try:
-    from _test_async import test_send_async
+    from ._test_async import TestAsync
 except (SyntaxError, ImportError):
     pass
 
