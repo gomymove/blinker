@@ -1,3 +1,7 @@
+🍴 This library is a fork of blinker, with added support for
+**async and coroutine receivers**.
+It works as the original code, and offers a new ``send_async`` method.
+
 # Blinker
 
 Blinker provides a fast dispatching system that allows any number of
