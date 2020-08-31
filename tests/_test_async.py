@@ -43,3 +43,24 @@ class TestAsync(unittest.TestCase):
         assert set(calls) == set(expected.keys())
         collected_results = {v.result() for r, v in results}
         assert collected_results == set(expected.values())
+
+    def test_send_async_with_values(self):
+        some_signal = blinker.Signal("some_signal")
+
+        @some_signal.connect
+        async def receive(sender, **kwargs):
+            assert sender == "sender"
+            assert kwargs.get("foo") == "bar"
+
+            return "done"
+
+        async def send():
+            return some_signal.send_async("sender", **{"foo": "bar"})
+
+        loop = asyncio.get_event_loop()
+        results = loop.run_until_complete(send())
+
+        assert len(results) == 1
+
+        done = [v.result() for r, v in results][0]
+        assert done == "done"
