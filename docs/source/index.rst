@@ -1,6 +1,11 @@
 Blinker Documentation
 =====================
 
+.. attention::
+  This library is a fork of blinker, with added support for
+  **async and coroutine receivers**.
+  It works as the original code, and offers a new ``send_async`` method.
+
 Blinker provides fast & simple object-to-object and broadcast
 signaling for Python objects.
 
