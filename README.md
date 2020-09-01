@@ -1,6 +1,9 @@
+[![Build Status](https://travis-ci.org/gomymove/blinker.svg?branch=master)](https://travis-ci.org/gomymove/blinker)
+
 🍴 This library is a fork of blinker, with added support for
 **async and coroutine receivers**.
 It works as the original code, and offers a new ``send_async`` method.
+
 
 # Blinker
 
