@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/jek/blinker.svg?branch=master)](https://travis-ci.org/jek/blinker)
+[![Build Status](https://travis-ci.org/gomymove/blinker.svg?branch=master)](https://travis-ci.org/gomymove/blinker)
 
 
 # Blinker
