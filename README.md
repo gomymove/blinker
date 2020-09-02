@@ -38,6 +38,32 @@ Round 3!
 
 See the [Blinker documentation](https://pythonhosted.org/blinker/) for more information.
 
+## Async support
+
+Send a signal asynchronously to coroutine receivers.
+
+```python
+>>> async def receiver_a(sender):
+...     return 'value a'
+...
+>>> async def receiver_b(sender):
+...     return 'value b'
+...
+>>> ready = signal('ready')
+>>> ready.connect(receiver_a)
+>>> ready.connect(receiver_b)
+...
+>>> async def collect():
+...     return ready.send_async('sender')
+...
+>>> loop = asyncio.get_event_loop()
+>>> results = loop.run_until_complete(collect())
+>>> len(results)
+2
+>>> [v.result() for r, v in results][0]
+value a
+```
+
 ## Requirements
 
 Blinker requires Python 2.7, Python 3.4 or higher, or Jython 2.7 or higher.
